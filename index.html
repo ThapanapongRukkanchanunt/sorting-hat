@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Sorting Hat Overlay</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; }
+    .stage { position: relative; width: 100vw; height: 100vh; overflow: hidden; }
+    video, canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    .hud {
+      position: absolute; left: 12px; bottom: 12px; color: #fff;
+      font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto;
+      background: rgba(0,0,0,.35); padding: 8px 10px; border-radius: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas"></canvas>
+    <div class="hud">Sorting Hat: Experimental</div>
+  </div>
+
+  <script type="module">
+  import {
+      FilesetResolver,
+      FaceLandmarker
+    } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest";
+
+    // Tunables
+    const MAX_FACES = 5;
+    const START_HAT_SRC = "hat.png"; // starting hat
+    const HAT_SRCS = ["hat1.png","hat2.png","hat3.png","hat4.png"]; // colored hats
+    const HAT_SCALE = 5;
+    const HAT_OFFSET = 0;
+    const SMOOTHING = 0.8;
+
+    // Animation timings (ms)
+    const HOLD_MS = 1000;           // start hat only
+    const COUNTDOWN_TOTAL_MS = 2000;// 2s total: "2" for 1s, then "1" for 1s
+    // After countdown ends, switch instantly to colored hat (FINAL)
+
+    // Tracking parameters
+    const MAX_MATCH_DIST = 180;     // px threshold for matching detection->track
+    const TRACK_FORGET_MS = 1200;   // drop tracks not seen for this long
+
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d", { alpha: true });
+
+    // Load images
+    function loadImage(src){
+      return new Promise((res, rej)=>{
+        const im = new Image();
+        im.onload = () => res(im);
+        im.onerror = () => rej(new Error("Failed to load " + src));
+        im.src = src;
+      });
+    }
+    const startHatImg = new Image();
+    let hatImgs = [];
+
+    // Tracks: id -> track
+    // track = { id, x,y, angle, eyeDist, state, stateT0, hatIdx, lastSeen }
+    const tracks = new Map();
+    let nextId = 1;
+
+    function nowMs(){ return performance.now(); }
+    function lerp(a,b,t){ return a + (b-a)*t; }
+    function smoothTrackPose(tr, target){
+      tr.x = lerp(tr.x ?? target.x, target.x, SMOOTHING);
+      tr.y = lerp(tr.y ?? target.y, target.y, SMOOTHING);
+      tr.angle = lerp(tr.angle ?? target.angle, target.angle, SMOOTHING);
+      tr.eyeDist = lerp(tr.eyeDist ?? target.eyeDist, target.eyeDist, SMOOTHING);
+    }
+
+    function startNewTrack(target){
+      const id = nextId++;
+      tracks.set(id, {
+        id,
+        x: target.x, y: target.y, angle: target.angle, eyeDist: target.eyeDist,
+        state: "HOLD",
+        stateT0: nowMs(),
+        hatIdx: null,
+        lastSeen: nowMs()
+      });
+      return tracks.get(id);
+    }
+
+    function updateStates(tr){
+      const tNow = nowMs();
+      const elapsed = tNow - tr.stateT0;
+      if (tr.state === "HOLD" && elapsed >= HOLD_MS){
+        tr.state = "COUNTDOWN";
+        tr.stateT0 = tNow;
+      } else if (tr.state === "COUNTDOWN" && elapsed >= COUNTDOWN_TOTAL_MS){
+        // assign random hat when switching
+        tr.hatIdx = Math.floor(Math.random()*hatImgs.length);
+        tr.state = "FINAL";
+        tr.stateT0 = tNow;
+      }
+    }
+
+    function drawCountdownCentered(tr){
+      const tNow = nowMs();
+      const elapsed = tNow - tr.stateT0; // in COUNTDOWN
+      const digit = (elapsed < COUNTDOWN_TOTAL_MS/2) ? 2 : 1;
+
+      // draw number centered on current hat bbox
+      const w = tr.eyeDist * HAT_SCALE;
+      const factor = (startHatImg && startHatImg.complete && startHatImg.naturalWidth > 0)
+        ? (startHatImg.naturalHeight / startHatImg.naturalWidth) : 1;
+      const h = w * factor;
+
+      ctx.save();
+      ctx.translate(tr.x, tr.y);
+      ctx.rotate(tr.angle);
+      // center of hat image roughly at (0, -h/2); we want visible over the brim/crown area
+      const tx = 0;
+      const ty = -h * 0.6; // slightly above center of the hat image
+      // keep text upright
+      ctx.rotate(-tr.angle);
+      ctx.font = "bold 64px system-ui, -apple-system, Segoe UI, Roboto";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.lineWidth = 8;
+      ctx.strokeStyle = "rgba(0,0,0,0.65)";
+      ctx.strokeText(String(digit), tx, ty);
+      ctx.fillStyle = "white";
+      ctx.fillText(String(digit), tx, ty);
+      ctx.restore();
+    }
+
+    // Simple nearest-neighbor matching from detections to existing tracks
+    function matchDetectionsToTracks(dets){
+      const tNow = nowMs();
+      // active track ids (recently seen)
+      const activeIds = [...tracks.values()]
+        .filter(tr => (tNow - tr.lastSeen) <= TRACK_FORGET_MS)
+        .map(tr => tr.id);
+      const unmatchedTrackIds = new Set(activeIds);
+      const assignments = []; // {id, det}
+
+      // Build all candidate pairs with distances
+      const pairs = [];
+      for (const det of dets){
+        for (const id of activeIds){
+          const tr = tracks.get(id);
+          const d = Math.hypot(det.x - tr.x, det.y - tr.y);
+          pairs.push({id, det, d});
+        }
+      }
+      // Sort by distance and greedily assign under threshold
+      pairs.sort((a,b)=>a.d-b.d);
+      const usedDet = new Set();
+      for (const p of pairs){
+        if (p.d > MAX_MATCH_DIST) continue;
+        if (usedDet.has(p.det._idx)) continue;
+        if (!unmatchedTrackIds.has(p.id)) continue;
+        assignments.push({id: p.id, det: p.det});
+        usedDet.add(p.det._idx);
+        unmatchedTrackIds.delete(p.id);
+      }
+
+      // Create new tracks for detections not matched
+      for (const det of dets){
+        if (!usedDet.has(det._idx)){
+          const tr = startNewTrack(det);
+          assignments.push({id: tr.id, det});
+          usedDet.add(det._idx);
+        }
+      }
+
+      // Expire old tracks
+      for (const id of [...tracks.keys()]){
+        const tr = tracks.get(id);
+        if (tNow - tr.lastSeen > TRACK_FORGET_MS){
+          tracks.delete(id);
+        }
+      }
+
+      return assignments;
+    }
+
+    // Webcam, canvas, detector
+    async function startCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 }},
+        audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+    }
+
+    function resizeCanvasToVideo() {
+      const track = video.srcObject?.getVideoTracks?.()[0];
+      const s = track?.getSettings?.() || {};
+      const vw = s.width || video.videoWidth || 1280;
+      const vh = s.height || video.videoHeight || 720;
+      if (canvas.width !== vw || canvas.height !== vh) {
+        canvas.width = vw; canvas.height = vh;
+      }
+    }
+
+    let faceLandmarker;
+    async function loadDetector() {
+      const fileset = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+      );
+      faceLandmarker = await FaceLandmarker.createFromOptions(fileset, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+        },
+        runningMode: "VIDEO",
+        numFaces: MAX_FACES,
+        outputFaceBlendshapes: false,
+        outputFacialTransformationMatrixes: false
+      });
+    }
+
+    function drawFrame(results) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const tNow = nowMs();
+      const toPx = (p) => ({ x: p.x * canvas.width, y: p.y * canvas.height });
+
+      // Build detections list with pose info
+      const dets = [];
+      const n = results.faceLandmarks?.length || 0;
+      for (let i=0; i<n; i++){
+        const lm = results.faceLandmarks[i];
+        if (!lm) continue;
+        const rEye = toPx(lm[33]);
+        const lEye = toPx(lm[263]);
+        const dx = lEye.x - rEye.x;
+        const dy = lEye.y - rEye.y;
+        const eyeDist = Math.hypot(dx, dy);
+        const angle = Math.atan2(dy, dx);
+        const cx = (lEye.x + rEye.x) / 2;
+        const cy = (lEye.y + rEye.y) / 2;
+        const nx = -Math.sin(angle);
+        const ny =  Math.cos(angle);
+        const hatW = eyeDist * HAT_SCALE;
+        const offset = HAT_OFFSET * hatW;
+        const det = { x: cx + nx*offset, y: cy + ny*offset, angle, eyeDist, _idx: i };
+        dets.push(det);
+      }
+
+      // Match to persistent tracks
+      const assignments = matchDetectionsToTracks(dets);
+
+      // Update/smooth and draw each assigned track
+      for (const {id, det} of assignments){
+        const tr = tracks.get(id);
+        tr.lastSeen = tNow;
+
+        // Smooth pose
+        smoothTrackPose(tr, det);
+
+        // Update animation state per track
+        updateStates(tr);
+
+        // Draw the correct hat for current state
+        ctx.save();
+        ctx.translate(tr.x, tr.y);
+        ctx.rotate(tr.angle);
+
+        const w = tr.eyeDist * HAT_SCALE;
+
+        if (tr.state === "HOLD" || tr.state === "COUNTDOWN"){
+          // Draw start hat
+          if (startHatImg.complete && startHatImg.naturalWidth > 0){
+            const h = w * (startHatImg.naturalHeight / startHatImg.naturalWidth);
+            ctx.drawImage(startHatImg, -w/2, -h, w, h);
+            // overlay countdown digits during COUNTDOWN
+            if (tr.state === "COUNTDOWN"){
+              // draw number centered on the hat image
+              const ty = -h * 0.6;
+              ctx.rotate(-tr.angle);
+              const elapsed = tNow - tr.stateT0;
+              const digit = (elapsed < COUNTDOWN_TOTAL_MS/2) ? 2 : 1;
+              ctx.font = "bold 64px system-ui, -apple-system, Segoe UI, Roboto";
+              ctx.textAlign = "center";
+              ctx.textBaseline = "middle";
+              ctx.lineWidth = 8;
+              ctx.strokeStyle = "rgba(0,0,0,0.65)";
+              ctx.strokeText(String(digit), 0, ty);
+              ctx.fillStyle = "white";
+              ctx.fillText(String(digit), 0, ty);
+              ctx.rotate(tr.angle);
+            }
+          }
+        } else { // FINAL
+          const hatImg = hatImgs[tr.hatIdx];
+          if (hatImg && hatImg.complete && hatImg.naturalWidth > 0){
+            const h = w * (hatImg.naturalHeight / hatImg.naturalWidth);
+            ctx.drawImage(hatImg, -w/2, -h, w, h);
+          } else if (startHatImg.complete && startHatImg.naturalWidth > 0){
+            const h = w * (startHatImg.naturalHeight / startHatImg.naturalWidth);
+            ctx.drawImage(startHatImg, -w/2, -h, w, h);
+          }
+        }
+
+        ctx.restore();
+      }
+    }
+
+    let lastVideoTime = -1;
+    async function renderLoop() {
+      if (!faceLandmarker) return requestAnimationFrame(renderLoop);
+      resizeCanvasToVideo();
+
+      const now = performance.now();
+      if (video.currentTime !== lastVideoTime) {
+        const results = await faceLandmarker.detectForVideo(video, now);
+        drawFrame(results);
+        lastVideoTime = video.currentTime;
+      }
+      requestAnimationFrame(renderLoop);
+    }
+
+    (async () => {
+      try {
+        // Preload hats
+        const loaded = await Promise.all(HAT_SRCS.map(loadImage));
+        hatImgs = loaded;
+        startHatImg.src = START_HAT_SRC;
+
+        await startCamera();
+        await loadDetector();
+        renderLoop();
+      } catch (err) {
+        alert("Camera or model failed to load: " + err);
+        console.error(err);
+      }
+    })();
+  </script>
+</body>
+</html>
