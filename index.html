@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Sorting Hat Overlay</title>
+  <title>The C-Sorting Hat</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     html, body { margin: 0; height: 100%; background: #000; }
@@ -13,13 +13,57 @@
       font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto;
       background: rgba(0,0,0,.35); padding: 8px 10px; border-radius: 10px;
     }
-  </style>
+  
+    /* --- Responsive gold frame overlay --- */
+    .frame {
+      position: absolute;
+      inset: 0;
+      z-index: 3;            /* above canvas */
+      pointer-events: none;  /* don't block interactions (e.g., camera prompt) */
+      width: 100%;
+      height: 100%;
+    }
+    .frame .stroke {
+      stroke: url(#goldGrad);
+      fill: none;
+    }
+    /* --- Responsive CS logo (top-right) --- */
+    #cs-logo {
+      position: absolute;
+      right: 1.5vw;
+      top: 1.5vw;
+      z-index: 4;                 /* above frame */
+      width: clamp(40px, 10vw, 120px);
+      height: auto;
+      pointer-events: none;
+      filter: drop-shadow(0 2px 8px rgba(0,0,0,0.4));
+    }
+    video { z-index: 0; }
+    canvas { z-index: 1; }
+    .hud { z-index: 5; }
+    
+</style>
 </head>
 <body>
   <div class="stage">
     <video id="video" autoplay playsinline muted></video>
     <canvas id="canvas"></canvas>
-    <div class="hud">Sorting Hat: Experimental</div>
+    <!-- Gold frame overlay (scales to any aspect ratio) -->
+    <svg class="frame" id="gold-frame" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+      <defs>
+        <linearGradient id="goldGrad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%"  stop-color="#E6B800"/>
+          <stop offset="50%" stop-color="#FFD700"/>
+          <stop offset="100%" stop-color="#B8860B"/>
+        </linearGradient>
+      </defs>
+      <rect class="stroke" x="1.5" y="1.5" width="97" height="97" rx="4" ry="4" stroke-width="1.5"/>
+      <rect class="stroke" x="3.5" y="3.5" width="93" height="93" rx="3" ry="3" stroke-opacity="0.6" stroke-width="0.8"/>
+    </svg>
+    <!-- CS logo (place cs_logo.png next to index.html) -->
+    <img id="cs-logo" src="cs_logo.png" alt="CS Logo"/>
+    
+    <div class="hud">CSCMU Science Week 2025</div>
   </div>
 
   <script type="module">
