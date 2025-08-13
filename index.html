@@ -32,9 +32,9 @@
     const MAX_FACES = 5;
     const START_HAT_SRC = "hat.png"; // starting hat
     const HAT_SRCS = ["hat1.png","hat2.png","hat3.png","hat4.png"]; // colored hats
-    const HAT_SCALE = 5;
-    const HAT_OFFSET = 0;
-    const SMOOTHING = 0.8;
+    const HAT_SCALE = 4;
+    const HAT_OFFSET = 0.05;
+    const SMOOTHING = 1;
 
     // Animation timings (ms)
     const HOLD_MS = 1000;           // start hat only
@@ -235,8 +235,12 @@
         const lEye = toPx(lm[263]);
         const dx = lEye.x - rEye.x;
         const dy = lEye.y - rEye.y;
-        const eyeDist = Math.hypot(dx, dy);
-        const angle = Math.atan2(dy, dx);
+        // round eyeDist to the nearest 25
+        const eyeDist = Math.round(Math.hypot(dx, dy) / 25) * 25;
+        //const eyeDist = Math.hypot(dx, dy);
+        // round angle to the nearest 0.1 radian
+        const angle = Math.round(Math.atan2(dy, dx) / 0.1) * 0.1;
+        //const angle = Math.atan2(dy, dx);
         const cx = (lEye.x + rEye.x) / 2;
         const cy = (lEye.y + rEye.y) / 2;
         const nx = -Math.sin(angle);
