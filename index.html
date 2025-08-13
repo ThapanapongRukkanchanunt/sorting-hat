@@ -38,11 +38,23 @@
   pointer-events: none;
   filter: drop-shadow(0 2px 8px rgba(0,0,0,0.4));
 }
+#snapButton { /* lower right corner */
+  position: absolute;
+  right: 20px; bottom: 20px;
+  padding: 10px 15px;
+  background: rgba(255,255,255,0.8);
+  border: none; border-radius: 8px;
+  font: bold 16px system-ui, -apple-system, Segoe UI, Roboto;
+  color: #333;
+  cursor: pointer;
+  z-index: 6; /* above everything */
+}
     video { z-index: 0; }
     canvas { z-index: 1; }
     .hud { z-index: 5; }
     
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 </head>
 <body>
   <div class="stage">
@@ -64,6 +76,9 @@
     <img id="cs-logo" src="cs_logo.png" alt="CS Logo"/>
     
     <div class="hud">CSCMU Science Week 2025</div>
+    <button id="snapButton">
+      <span>Snap!</span>
+    </button>
   </div>
 
   <script type="module">
@@ -367,6 +382,27 @@
       }
       requestAnimationFrame(renderLoop);
     }
+
+    // Handle button click to take a snapshot
+    function captureSnapshot() {
+      html2canvas(document.body).then((canvas) => {
+        const snapshotDataUrl = canvas.toDataURL("image/png");
+
+        // Check if the browser supports the download attribute
+        const link = document.createElement("a");
+        if (typeof link.download === "string") {
+          // Use the download attribute to save the image
+          link.href = snapshotDataUrl;
+          link.download = "screenshot.png";
+          link.click();
+        } else {
+          // Fallback for mobile browsers: open the image in a new tab
+          window.open(snapshotDataUrl, "_blank");
+        }
+      });
+    }
+
+    document.getElementById("snapButton").addEventListener("click", captureSnapshot);
 
     (async () => {
       try {
